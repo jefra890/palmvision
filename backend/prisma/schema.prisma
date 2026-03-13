@@ -6,8 +6,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // User model
@@ -24,6 +25,7 @@ model User {
   workspaces    WorkspaceMember[]
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   invitesSent   Invite[]   @relation("InvitesSent")
+  palmReadings  PalmReading[]
   
   // Timestamps
   createdAt     DateTime  @default(now())
@@ -116,6 +118,24 @@ model Subscription {
   updatedAt            DateTime  @updatedAt
   
   @@map("subscriptions")
+}
+
+// Palm Reading model
+model PalmReading {
+  id        String   @id @default(cuid())
+  hand      String   // "derecha" or "izquierda"
+  imageUrl  String   @db.Text // base64 image
+  reading   String   @db.Text // AI generated reading
+
+  // Relations
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("palm_readings")
 }
 
 // Audit Log model

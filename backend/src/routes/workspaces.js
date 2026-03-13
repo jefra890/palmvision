@@ -4,10 +4,10 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
 import { asyncHandler, HttpErrors } from '../middleware/errorHandler.js';
 import { authenticate, requireWorkspaceMember, requireWorkspaceAdmin } from '../middleware/auth.js';
 import { config } from '../config/index.js';
+import prisma from '../lib/prisma.js';
 
 const router = Router();
 
@@ -20,9 +20,6 @@ const updateWorkspaceSchema = z.object({
   name: z.string().min(2).max(50).optional(),
   settings: z.object({}).passthrough().optional(),
 });
-
-// In-memory workspace store for demo
-const workspaces = new Map();
 
 /**
  * Generate URL-friendly slug from name
@@ -39,14 +36,25 @@ function generateSlug(name) {
  * List all workspaces for current user
  */
 router.get('/', authenticate, asyncHandler(async (req, res) => {
-  const userWorkspaces = [];
-  
-  for (const workspace of workspaces.values()) {
-    if (workspace.ownerId === req.user.id || 
-        workspace.members.some(m => m.userId === req.user.id)) {
-      userWorkspaces.push(workspace);
-    }
-  }
+  const userWorkspaces = await prisma.workspace.findMany({
+    where: {
+      OR: [
+        { ownerId: req.user.id },
+        { members: { some: { userId: req.user.id } } },
+      ],
+    },
+    include: {
+      members: {
+        include: {
+          user: {
+            select: { id: true, email: true, name: true, avatar: true },
+          },
+        },
+      },
+      _count: { select: { members: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
   res.json({
     success: true,
@@ -68,37 +76,45 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
   const { name } = result.data;
 
   // Check workspace limit
-  let userWorkspaceCount = 0;
-  for (const workspace of workspaces.values()) {
-    if (workspace.ownerId === req.user.id) {
-      userWorkspaceCount++;
-    }
-  }
+  const userWorkspaceCount = await prisma.workspace.count({
+    where: { ownerId: req.user.id },
+  });
 
   if (userWorkspaceCount >= config.workspaces.maxPerUser) {
     throw HttpErrors.badRequest(`Maximum ${config.workspaces.maxPerUser} workspaces allowed`);
   }
 
-  // Create workspace
-  const workspace = {
-    id: `ws_${uuidv4()}`,
-    name,
-    slug: generateSlug(name),
-    ownerId: req.user.id,
-    plan: 'free',
-    settings: {},
-    members: [
-      {
-        userId: req.user.id,
-        role: 'owner',
-        joinedAt: new Date(),
-      },
-    ],
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
+  // Generate unique slug
+  let slug = generateSlug(name);
+  const existingSlug = await prisma.workspace.findUnique({ where: { slug } });
+  if (existingSlug) {
+    slug = `${slug}-${Date.now().toString(36)}`;
+  }
 
-  workspaces.set(workspace.id, workspace);
+  // Create workspace with owner as member
+  const workspace = await prisma.workspace.create({
+    data: {
+      name,
+      slug,
+      ownerId: req.user.id,
+      plan: 'free',
+      members: {
+        create: {
+          userId: req.user.id,
+          role: 'owner',
+        },
+      },
+    },
+    include: {
+      members: {
+        include: {
+          user: {
+            select: { id: true, email: true, name: true, avatar: true },
+          },
+        },
+      },
+    },
+  });
 
   res.status(201).json({
     success: true,
@@ -111,7 +127,20 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
  * Get a specific workspace
  */
 router.get('/:workspaceId', authenticate, requireWorkspaceMember, asyncHandler(async (req, res) => {
-  const workspace = workspaces.get(req.params.workspaceId);
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: req.params.workspaceId },
+    include: {
+      members: {
+        include: {
+          user: {
+            select: { id: true, email: true, name: true, avatar: true },
+          },
+        },
+      },
+      subscription: true,
+      _count: { select: { members: true } },
+    },
+  });
 
   if (!workspace) {
     throw HttpErrors.notFound('Workspace not found');
@@ -128,9 +157,11 @@ router.get('/:workspaceId', authenticate, requireWorkspaceMember, asyncHandler(a
  * Update a workspace
  */
 router.patch('/:workspaceId', authenticate, requireWorkspaceAdmin, asyncHandler(async (req, res) => {
-  const workspace = workspaces.get(req.params.workspaceId);
+  const existing = await prisma.workspace.findUnique({
+    where: { id: req.params.workspaceId },
+  });
 
-  if (!workspace) {
+  if (!existing) {
     throw HttpErrors.notFound('Workspace not found');
   }
 
@@ -142,17 +173,28 @@ router.patch('/:workspaceId', authenticate, requireWorkspaceAdmin, asyncHandler(
 
   const { name, settings } = result.data;
 
-  // Update workspace
+  const updateData = {};
   if (name) {
-    workspace.name = name;
-    workspace.slug = generateSlug(name);
+    updateData.name = name;
+    updateData.slug = generateSlug(name);
   }
   if (settings) {
-    workspace.settings = { ...workspace.settings, ...settings };
+    updateData.settings = { ...(existing.settings || {}), ...settings };
   }
-  workspace.updatedAt = new Date();
 
-  workspaces.set(workspace.id, workspace);
+  const workspace = await prisma.workspace.update({
+    where: { id: req.params.workspaceId },
+    data: updateData,
+    include: {
+      members: {
+        include: {
+          user: {
+            select: { id: true, email: true, name: true, avatar: true },
+          },
+        },
+      },
+    },
+  });
 
   res.json({
     success: true,
@@ -165,7 +207,9 @@ router.patch('/:workspaceId', authenticate, requireWorkspaceAdmin, asyncHandler(
  * Delete a workspace
  */
 router.delete('/:workspaceId', authenticate, asyncHandler(async (req, res) => {
-  const workspace = workspaces.get(req.params.workspaceId);
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: req.params.workspaceId },
+  });
 
   if (!workspace) {
     throw HttpErrors.notFound('Workspace not found');
@@ -176,7 +220,9 @@ router.delete('/:workspaceId', authenticate, asyncHandler(async (req, res) => {
     throw HttpErrors.forbidden('Only the workspace owner can delete it');
   }
 
-  workspaces.delete(workspace.id);
+  await prisma.workspace.delete({
+    where: { id: workspace.id },
+  });
 
   res.json({
     success: true,
@@ -189,17 +235,28 @@ router.delete('/:workspaceId', authenticate, asyncHandler(async (req, res) => {
  * List workspace members
  */
 router.get('/:workspaceId/members', authenticate, requireWorkspaceMember, asyncHandler(async (req, res) => {
-  const workspace = workspaces.get(req.params.workspaceId);
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: req.params.workspaceId },
+  });
 
   if (!workspace) {
     throw HttpErrors.notFound('Workspace not found');
   }
 
+  const members = await prisma.workspaceMember.findMany({
+    where: { workspaceId: req.params.workspaceId },
+    include: {
+      user: {
+        select: { id: true, email: true, name: true, avatar: true },
+      },
+    },
+    orderBy: { joinedAt: 'asc' },
+  });
+
   res.json({
     success: true,
-    data: workspace.members,
+    data: members,
   });
 }));
 
 export default router;
-

@@ -5,6 +5,7 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config/index.js';
 import { HttpErrors, asyncHandler } from './errorHandler.js';
+import prisma from '../lib/prisma.js';
 
 /**
  * Verify JWT token and attach user to request
@@ -87,14 +88,26 @@ export const requireRoles = (...roles) => {
  */
 export const requireWorkspaceMember = asyncHandler(async (req, res, next) => {
   const { workspaceId } = req.params;
-  
+
   if (!workspaceId) {
     throw HttpErrors.badRequest('Workspace ID required');
   }
 
-  // In production, check database for membership
-  // For now, we'll pass through
+  const member = await prisma.workspaceMember.findUnique({
+    where: {
+      userId_workspaceId: {
+        userId: req.user.id,
+        workspaceId,
+      },
+    },
+  });
+
+  if (!member) {
+    throw HttpErrors.forbidden('You are not a member of this workspace');
+  }
+
   req.workspaceId = workspaceId;
+  req.workspaceRole = member.role;
   next();
 });
 
@@ -103,14 +116,26 @@ export const requireWorkspaceMember = asyncHandler(async (req, res, next) => {
  */
 export const requireWorkspaceAdmin = asyncHandler(async (req, res, next) => {
   const { workspaceId } = req.params;
-  
+
   if (!workspaceId) {
     throw HttpErrors.badRequest('Workspace ID required');
   }
 
-  // In production, check database for admin role
-  // For now, we'll pass through
+  const member = await prisma.workspaceMember.findUnique({
+    where: {
+      userId_workspaceId: {
+        userId: req.user.id,
+        workspaceId,
+      },
+    },
+  });
+
+  if (!member || !['owner', 'admin'].includes(member.role)) {
+    throw HttpErrors.forbidden('Admin or owner access required');
+  }
+
   req.workspaceId = workspaceId;
+  req.workspaceRole = member.role;
   next();
 });
 

@@ -4,10 +4,11 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import { asyncHandler, HttpErrors } from '../middleware/errorHandler.js';
 import { authenticate, requireWorkspaceMember, requireWorkspaceAdmin } from '../middleware/auth.js';
 import { config } from '../config/index.js';
+import prisma from '../lib/prisma.js';
 
 const router = Router();
 
@@ -20,9 +21,6 @@ const inviteSchema = z.object({
 const updateMemberSchema = z.object({
   role: z.enum(['admin', 'member']),
 });
-
-// In-memory invite store for demo
-const invites = new Map();
 
 /**
  * POST /teams/workspaces/:workspaceId/invites
@@ -38,19 +36,58 @@ router.post('/workspaces/:workspaceId/invites', authenticate, requireWorkspaceAd
   const { email, role } = result.data;
   const { workspaceId } = req.params;
 
-  // Create invite
-  const invite = {
-    id: `inv_${uuidv4()}`,
-    workspaceId,
-    email,
-    role,
-    invitedBy: req.user.id,
-    token: uuidv4(),
-    expiresAt: new Date(Date.now() + config.teams.inviteExpiryDays * 24 * 60 * 60 * 1000),
-    createdAt: new Date(),
-  };
+  // Check workspace exists
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    include: { _count: { select: { members: true } } },
+  });
 
-  invites.set(invite.id, invite);
+  if (!workspace) {
+    throw HttpErrors.notFound('Workspace not found');
+  }
+
+  // Check member limit
+  if (workspace._count.members >= config.teams.maxMembers) {
+    throw HttpErrors.badRequest(`Maximum ${config.teams.maxMembers} members allowed`);
+  }
+
+  // Check if user is already a member
+  const existingMember = await prisma.workspaceMember.findFirst({
+    where: {
+      workspaceId,
+      user: { email },
+    },
+  });
+
+  if (existingMember) {
+    throw HttpErrors.conflict('User is already a member of this workspace');
+  }
+
+  // Check if invite already exists
+  const existingInvite = await prisma.invite.findFirst({
+    where: {
+      workspaceId,
+      email,
+      expiresAt: { gt: new Date() },
+    },
+  });
+
+  if (existingInvite) {
+    throw HttpErrors.conflict('An active invite already exists for this email');
+  }
+
+  // Create invite
+  const token = crypto.randomBytes(32).toString('hex');
+  const invite = await prisma.invite.create({
+    data: {
+      email,
+      role,
+      token,
+      workspaceId,
+      invitedById: req.user.id,
+      expiresAt: new Date(Date.now() + config.teams.inviteExpiryDays * 24 * 60 * 60 * 1000),
+    },
+  });
 
   // In production, send invitation email here
   console.log(`📧 Invitation email would be sent to ${email}`);
@@ -72,22 +109,25 @@ router.post('/workspaces/:workspaceId/invites', authenticate, requireWorkspaceAd
  */
 router.get('/workspaces/:workspaceId/invites', authenticate, requireWorkspaceAdmin, asyncHandler(async (req, res) => {
   const { workspaceId } = req.params;
-  const workspaceInvites = [];
 
-  for (const invite of invites.values()) {
-    if (invite.workspaceId === workspaceId && invite.expiresAt > new Date()) {
-      workspaceInvites.push({
-        id: invite.id,
-        email: invite.email,
-        role: invite.role,
-        expiresAt: invite.expiresAt,
-      });
-    }
-  }
+  const invites = await prisma.invite.findMany({
+    where: {
+      workspaceId,
+      expiresAt: { gt: new Date() },
+    },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      expiresAt: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
   res.json({
     success: true,
-    data: workspaceInvites,
+    data: invites,
   });
 }));
 
@@ -97,13 +137,18 @@ router.get('/workspaces/:workspaceId/invites', authenticate, requireWorkspaceAdm
  */
 router.delete('/workspaces/:workspaceId/invites/:inviteId', authenticate, requireWorkspaceAdmin, asyncHandler(async (req, res) => {
   const { inviteId } = req.params;
-  const invite = invites.get(inviteId);
+
+  const invite = await prisma.invite.findUnique({
+    where: { id: inviteId },
+  });
 
   if (!invite) {
     throw HttpErrors.notFound('Invite not found');
   }
 
-  invites.delete(inviteId);
+  await prisma.invite.delete({
+    where: { id: inviteId },
+  });
 
   res.json({
     success: true,
@@ -119,34 +164,51 @@ router.post('/invites/:token/accept', authenticate, asyncHandler(async (req, res
   const { token } = req.params;
 
   // Find invite by token
-  let foundInvite = null;
-  for (const invite of invites.values()) {
-    if (invite.token === token) {
-      foundInvite = invite;
-      break;
-    }
-  }
+  const invite = await prisma.invite.findUnique({
+    where: { token },
+  });
 
-  if (!foundInvite) {
+  if (!invite) {
     throw HttpErrors.notFound('Invite not found or expired');
   }
 
-  if (foundInvite.expiresAt < new Date()) {
-    invites.delete(foundInvite.id);
+  if (invite.expiresAt < new Date()) {
+    await prisma.invite.delete({ where: { id: invite.id } });
     throw HttpErrors.badRequest('Invite has expired');
   }
 
-  // In production, add user to workspace members
-  console.log(`👤 User ${req.user.id} joined workspace ${foundInvite.workspaceId}`);
+  // Check if user is already a member
+  const existingMember = await prisma.workspaceMember.findUnique({
+    where: {
+      userId_workspaceId: {
+        userId: req.user.id,
+        workspaceId: invite.workspaceId,
+      },
+    },
+  });
+
+  if (existingMember) {
+    await prisma.invite.delete({ where: { id: invite.id } });
+    throw HttpErrors.conflict('You are already a member of this workspace');
+  }
+
+  // Add user to workspace
+  await prisma.workspaceMember.create({
+    data: {
+      userId: req.user.id,
+      workspaceId: invite.workspaceId,
+      role: invite.role,
+    },
+  });
 
   // Remove invite after acceptance
-  invites.delete(foundInvite.id);
+  await prisma.invite.delete({ where: { id: invite.id } });
 
   res.json({
     success: true,
     data: {
-      workspaceId: foundInvite.workspaceId,
-      role: foundInvite.role,
+      workspaceId: invite.workspaceId,
+      role: invite.role,
     },
   });
 }));
@@ -163,16 +225,34 @@ router.patch('/workspaces/:workspaceId/members/:memberId', authenticate, require
   }
 
   const { role } = result.data;
-  const { memberId } = req.params;
+  const { memberId, workspaceId } = req.params;
 
-  // In production, update member role in database
+  const member = await prisma.workspaceMember.findFirst({
+    where: { id: memberId, workspaceId },
+  });
+
+  if (!member) {
+    throw HttpErrors.notFound('Member not found');
+  }
+
+  // Cannot change owner's role
+  if (member.role === 'owner') {
+    throw HttpErrors.forbidden('Cannot change the owner\'s role');
+  }
+
+  const updatedMember = await prisma.workspaceMember.update({
+    where: { id: memberId },
+    data: { role },
+    include: {
+      user: {
+        select: { id: true, email: true, name: true, avatar: true },
+      },
+    },
+  });
+
   res.json({
     success: true,
-    data: {
-      memberId,
-      role,
-      updatedAt: new Date(),
-    },
+    data: updatedMember,
   });
 }));
 
@@ -181,12 +261,25 @@ router.patch('/workspaces/:workspaceId/members/:memberId', authenticate, require
  * Remove a team member
  */
 router.delete('/workspaces/:workspaceId/members/:memberId', authenticate, requireWorkspaceAdmin, asyncHandler(async (req, res) => {
-  const { memberId } = req.params;
+  const { memberId, workspaceId } = req.params;
 
-  // Cannot remove yourself if you're the owner
-  // In production, implement proper ownership transfer
+  const member = await prisma.workspaceMember.findFirst({
+    where: { id: memberId, workspaceId },
+  });
 
-  // In production, remove member from database
+  if (!member) {
+    throw HttpErrors.notFound('Member not found');
+  }
+
+  // Cannot remove owner
+  if (member.role === 'owner') {
+    throw HttpErrors.forbidden('Cannot remove the workspace owner');
+  }
+
+  await prisma.workspaceMember.delete({
+    where: { id: memberId },
+  });
+
   res.json({
     success: true,
     message: 'Member removed from workspace',
@@ -200,8 +293,26 @@ router.delete('/workspaces/:workspaceId/members/:memberId', authenticate, requir
 router.post('/workspaces/:workspaceId/leave', authenticate, requireWorkspaceMember, asyncHandler(async (req, res) => {
   const { workspaceId } = req.params;
 
-  // In production, check if user is owner (owners must transfer ownership first)
-  // Remove user from workspace members
+  const member = await prisma.workspaceMember.findUnique({
+    where: {
+      userId_workspaceId: {
+        userId: req.user.id,
+        workspaceId,
+      },
+    },
+  });
+
+  if (!member) {
+    throw HttpErrors.notFound('You are not a member of this workspace');
+  }
+
+  if (member.role === 'owner') {
+    throw HttpErrors.forbidden('Owners must transfer ownership before leaving');
+  }
+
+  await prisma.workspaceMember.delete({
+    where: { id: member.id },
+  });
 
   res.json({
     success: true,
@@ -210,4 +321,3 @@ router.post('/workspaces/:workspaceId/leave', authenticate, requireWorkspaceMemb
 }));
 
 export default router;
-

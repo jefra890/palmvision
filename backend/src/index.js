@@ -9,6 +9,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { config } from './config/index.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import prisma from './lib/prisma.js';
 
 // Import Routes
 import authRoutes from './routes/auth.js';
@@ -16,6 +17,7 @@ import billingRoutes from './routes/billing.js';
 import workspacesRoutes from './routes/workspaces.js';
 import teamsRoutes from './routes/teams.js';
 import permissionsRoutes from './routes/permissions.js';
+import palmReadingRoutes from './routes/palm-reading.js';
 
 const app = express();
 
@@ -63,6 +65,7 @@ apiRouter.use('/billing', billingRoutes);
 apiRouter.use('/workspaces', workspacesRoutes);
 apiRouter.use('/teams', teamsRoutes);
 apiRouter.use('/permissions', permissionsRoutes);
+apiRouter.use('/palm-reading', palmReadingRoutes);
 
 app.use(config.apiPrefix, apiRouter);
 
@@ -92,8 +95,9 @@ const server = app.listen(config.port, () => {
 });
 
 // Graceful Shutdown
-const shutdown = () => {
+const shutdown = async () => {
   console.log('\n👋 Shutting down gracefully...');
+  await prisma.$disconnect();
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);

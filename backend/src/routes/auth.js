@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { asyncHandler, HttpErrors } from '../middleware/errorHandler.js';
 import { authenticate, generateTokens } from '../middleware/auth.js';
+import prisma from '../lib/prisma.js';
 
 const router = Router();
 
@@ -27,8 +28,7 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Password is required'),
 });
 
-// In-memory stores for demo (replace with database in production)
-const users = new Map();
+// In-memory stores for verification/reset tokens (move to Redis in production)
 const verificationTokens = new Map();
 const resetTokens = new Map();
 
@@ -51,7 +51,8 @@ router.post('/register', asyncHandler(async (req, res) => {
   const { email, password, name } = result.data;
 
   // Check if user exists
-  if (users.has(email)) {
+  const existingUser = await prisma.user.findUnique({ where: { email } });
+  if (existingUser) {
     throw HttpErrors.conflict('User already exists');
   }
 
@@ -59,17 +60,15 @@ router.post('/register', asyncHandler(async (req, res) => {
   const hashedPassword = await bcrypt.hash(password, 12);
 
   // Create user
-  const user = {
-    id: `user_${Date.now()}`,
-    email,
-    name,
-    password: hashedPassword,
-    role: 'user',
-    emailVerified: !isVerificationRequired(), // Auto-verified if not required
-    createdAt: new Date(),
-  };
-
-  users.set(email, user);
+  const user = await prisma.user.create({
+    data: {
+      email,
+      name,
+      password: hashedPassword,
+      role: 'user',
+      emailVerified: isVerificationRequired() ? null : new Date(),
+    },
+  });
 
   // If email verification is required, send verification email
   if (isVerificationRequired()) {
@@ -87,9 +86,8 @@ router.post('/register', asyncHandler(async (req, res) => {
     console.log(`   Token: ${verificationToken}`);
     console.log(`   Link: ${process.env.APP_URL || 'http://localhost:3000'}/auth/verify-email?token=${verificationToken}`);
 
-    // Return success without tokens (user must verify first)
     const { password: _, ...userWithoutPassword } = user;
-    
+
     return res.status(201).json({
       success: true,
       message: 'Registration successful. Please check your email to verify your account.',
@@ -136,14 +134,10 @@ router.post('/verify-email', asyncHandler(async (req, res) => {
   }
 
   // Find and update user
-  const user = users.get(tokenData.email);
-  if (!user) {
-    throw HttpErrors.notFound('User not found');
-  }
-
-  user.emailVerified = true;
-  user.emailVerifiedAt = new Date();
-  users.set(tokenData.email, user);
+  const user = await prisma.user.update({
+    where: { id: tokenData.userId },
+    data: { emailVerified: new Date() },
+  });
 
   // Remove used token
   verificationTokens.delete(token);
@@ -173,7 +167,7 @@ router.post('/resend-verification', asyncHandler(async (req, res) => {
     throw HttpErrors.badRequest('Email required');
   }
 
-  const user = users.get(email);
+  const user = await prisma.user.findUnique({ where: { email } });
 
   // For security, don't reveal if user exists
   if (!user || user.emailVerified) {
@@ -224,12 +218,15 @@ router.post('/login', asyncHandler(async (req, res) => {
   const { email, password } = result.data;
 
   // Find user
-  const user = users.get(email);
+  const user = await prisma.user.findUnique({ where: { email } });
   if (!user) {
     throw HttpErrors.unauthorized('Invalid credentials');
   }
 
   // Verify password
+  if (!user.password) {
+    throw HttpErrors.unauthorized('Invalid credentials');
+  }
   const isValidPassword = await bcrypt.compare(password, user.password);
   if (!isValidPassword) {
     throw HttpErrors.unauthorized('Invalid credentials');
@@ -272,24 +269,27 @@ router.post('/logout', authenticate, asyncHandler(async (req, res) => {
  * Get current user
  */
 router.get('/me', authenticate, asyncHandler(async (req, res) => {
-  // Find user by ID from token
-  let foundUser = null;
-  for (const user of users.values()) {
-    if (user.id === req.user.id) {
-      foundUser = user;
-      break;
-    }
-  }
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      avatar: true,
+      role: true,
+      emailVerified: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
 
-  if (!foundUser) {
+  if (!user) {
     throw HttpErrors.notFound('User not found');
   }
 
-  const { password: _, ...userWithoutPassword } = foundUser;
-
   res.json({
     success: true,
-    data: userWithoutPassword,
+    data: user,
   });
 }));
 
@@ -306,7 +306,7 @@ router.post('/refresh', asyncHandler(async (req, res) => {
 
   // Verify refresh token and generate new tokens
   // In production, validate against stored refresh tokens
-  
+
   res.json({
     success: true,
     data: {
@@ -326,7 +326,7 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
     throw HttpErrors.badRequest('Email required');
   }
 
-  const user = users.get(email);
+  const user = await prisma.user.findUnique({ where: { email } });
 
   // Always return success for security (don't reveal if email exists)
   if (user) {
@@ -385,16 +385,12 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     throw HttpErrors.badRequest('Reset token has expired');
   }
 
-  // Find and update user
-  const user = users.get(tokenData.email);
-  if (!user) {
-    throw HttpErrors.notFound('User not found');
-  }
-
   // Update password
-  user.password = await bcrypt.hash(password, 12);
-  user.passwordChangedAt = new Date();
-  users.set(tokenData.email, user);
+  const hashedPassword = await bcrypt.hash(password, 12);
+  await prisma.user.update({
+    where: { id: tokenData.userId },
+    data: { password: hashedPassword },
+  });
 
   // Remove used token
   resetTokens.delete(token);

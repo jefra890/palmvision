@@ -172,13 +172,19 @@ export const teamsApi = {
     api.get<ApiResponse<unknown[]>>(`/workspaces/${workspaceId}/members`),
 
   inviteMember: (workspaceId: string, email: string, role: string) =>
-    api.post<ApiResponse<unknown>>(`/workspaces/${workspaceId}/invites`, { email, role }),
+    api.post<ApiResponse<unknown>>(`/teams/workspaces/${workspaceId}/invites`, { email, role }),
+
+  getInvites: (workspaceId: string) =>
+    api.get<ApiResponse<unknown[]>>(`/teams/workspaces/${workspaceId}/invites`),
+
+  cancelInvite: (workspaceId: string, inviteId: string) =>
+    api.delete<void>(`/teams/workspaces/${workspaceId}/invites/${inviteId}`),
 
   removeMember: (workspaceId: string, memberId: string) =>
-    api.delete<void>(`/workspaces/${workspaceId}/members/${memberId}`),
+    api.delete<void>(`/teams/workspaces/${workspaceId}/members/${memberId}`),
 
   updateMemberRole: (workspaceId: string, memberId: string, role: string) =>
-    api.patch<ApiResponse<unknown>>(`/workspaces/${workspaceId}/members/${memberId}`, { role }),
+    api.patch<ApiResponse<unknown>>(`/teams/workspaces/${workspaceId}/members/${memberId}`, { role }),
 };
 
 /**
@@ -194,5 +200,25 @@ export const billingApi = {
     api.post<ApiResponse<{ url: string }>>('/billing/portal'),
 
   getInvoices: () => api.get<ApiResponse<unknown[]>>('/billing/invoices'),
+};
+
+/**
+ * Palm Reading API endpoints
+ */
+export interface PalmReadingData {
+  id: string;
+  hand: string;
+  reading: string;
+  imageUrl?: string;
+  createdAt: string;
+}
+
+export const palmReadingApi = {
+  analyze: (image: string, hand: string, topic: string = 'general') =>
+    api.post<ApiResponse<{ id: string; reading: string; hand: string }>>('/palm-reading/analyze', { image, hand, topic }),
+  list: () =>
+    api.get<ApiResponse<PalmReadingData[]>>('/palm-reading/readings'),
+  get: (id: string) =>
+    api.get<ApiResponse<PalmReadingData>>(`/palm-reading/readings/${id}`),
 };
 

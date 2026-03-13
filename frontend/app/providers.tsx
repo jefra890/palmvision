@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactNode, createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { authApi, workspacesApi } from '../lib/api';
 
 /**
  * Auth Context for managing authentication state
@@ -13,13 +14,17 @@ interface User {
   role: string;
 }
 
+interface RegisterResult {
+  requiresVerification?: boolean;
+}
+
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  register: (email: string, password: string, name: string) => Promise<void>;
+  register: (email: string, password: string, name: string) => Promise<RegisterResult>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -102,16 +107,22 @@ export function Providers({ children }: { children: ReactNode }) {
   // Check authentication on mount
   useEffect(() => {
     let isMounted = true;
-    
+
     const checkAuth = async () => {
       try {
-        const response = await fetch('/api/auth/me');
-        if (response.ok && isMounted) {
-          const userData = await response.json();
-          setUser(userData);
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+          if (isMounted) setIsLoading(false);
+          return;
+        }
+        const response = await authApi.me();
+        if (isMounted && response.data) {
+          setUser(response.data as User);
         }
       } catch (error) {
         console.error('Auth check failed:', error);
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('refresh_token');
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -120,7 +131,7 @@ export function Providers({ children }: { children: ReactNode }) {
     };
 
     checkAuth();
-    
+
     return () => {
       isMounted = false;
     };
@@ -128,51 +139,44 @@ export function Providers({ children }: { children: ReactNode }) {
 
   // Auth Functions
   const login = useCallback(async (email: string, password: string) => {
-    try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Login failed');
-      }
-      
-      const userData = await response.json();
-      setUser(userData.user);
-    } catch (error) {
-      throw error;
-    }
+    const response = await authApi.login(email, password);
+    const { user: userData, accessToken, refreshToken } = response.data as {
+      user: User;
+      accessToken: string;
+      refreshToken: string;
+    };
+    localStorage.setItem('auth_token', accessToken);
+    localStorage.setItem('refresh_token', refreshToken);
+    setUser(userData);
   }, []);
 
   const logout = useCallback(async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      setUser(null);
-      setCurrentWorkspace(null);
+      await authApi.logout();
     } catch (error) {
       console.error('Logout failed:', error);
+    } finally {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('refresh_token');
+      setUser(null);
+      setCurrentWorkspace(null);
     }
   }, []);
 
-  const register = useCallback(async (email: string, password: string, name: string) => {
-    try {
-      const response = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Registration failed');
-      }
-      
-      const userData = await response.json();
-      setUser(userData.user);
-    } catch (error) {
-      throw error;
+  const register = useCallback(async (email: string, password: string, name: string): Promise<RegisterResult> => {
+    const response = await authApi.register(email, password, name);
+    const data = response.data as {
+      user: User;
+      accessToken?: string;
+      refreshToken?: string;
+      requiresVerification?: boolean;
+    };
+    if (data.accessToken) {
+      localStorage.setItem('auth_token', data.accessToken);
+      localStorage.setItem('refresh_token', data.refreshToken || '');
+      setUser(data.user);
     }
+    return { requiresVerification: data.requiresVerification };
   }, []);
 
   // Workspace Functions
@@ -185,23 +189,10 @@ export function Providers({ children }: { children: ReactNode }) {
   }, [workspaces]);
 
   const createWorkspace = useCallback(async (name: string): Promise<Workspace> => {
-    try {
-      const response = await fetch('/api/workspaces', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to create workspace');
-      }
-      
-      const newWorkspace = await response.json();
-      setWorkspaces(prev => [...prev, newWorkspace]);
-      return newWorkspace;
-    } catch (error) {
-      throw error;
-    }
+    const response = await workspacesApi.create(name);
+    const newWorkspace = response.data as Workspace;
+    setWorkspaces(prev => [...prev, newWorkspace]);
+    return newWorkspace;
   }, []);
 
   // Toast Functions
