@@ -45,7 +45,7 @@ export default function HomePage() {
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-amber-400 flex items-center justify-center">
                 <span className="text-white text-sm">&#10070;</span>
               </div>
-              <span className="font-bold text-xl text-white">PalmVision</span>
+              <span className="font-bold text-xl text-white">Tea Divino</span>
             </div>
             <div className="flex items-center gap-4">
               <Link
@@ -192,10 +192,10 @@ export default function HomePage() {
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-amber-400 flex items-center justify-center">
                 <span className="text-white text-sm">&#10070;</span>
               </div>
-              <span className="font-bold text-white">PalmVision</span>
+              <span className="font-bold text-white">Tea Divino</span>
             </div>
             <p className="text-sm">
-              &copy; {new Date().getFullYear()} PalmVision. Solo con fines de entretenimiento.
+              &copy; {new Date().getFullYear()} Tea Divino by Ajuua. Solo con fines de entretenimiento.
             </p>
           </div>
         </div>

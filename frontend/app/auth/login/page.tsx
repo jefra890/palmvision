@@ -61,7 +61,7 @@ export default function LoginPage() {
             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-amber-400 flex items-center justify-center">
               <span className="text-white text-lg">&#10070;</span>
             </div>
-            <span className="font-bold text-2xl text-white">PalmVision</span>
+            <span className="font-bold text-2xl text-white">Tea Divino</span>
           </Link>
         </div>
 

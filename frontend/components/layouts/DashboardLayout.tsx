@@ -1,8 +1,8 @@
 'use client';
 
-import { ReactNode, useState, useCallback } from 'react';
+import { ReactNode, useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   Hand,
   History,
@@ -13,6 +13,7 @@ import {
   ChevronDown,
   Sparkles,
   User,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '@/app/providers';
 
@@ -34,9 +35,29 @@ interface DashboardLayoutProps {
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
+  const router = useRouter();
+  const { user, logout, isLoading, isAuthenticated } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      router.push('/auth/login');
+    }
+  }, [isLoading, isAuthenticated, router]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
 
   const toggleSidebar = useCallback(() => {
     setSidebarOpen(prev => !prev);
@@ -77,7 +98,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-amber-400 flex items-center justify-center">
                 <span className="text-white text-sm">&#10070;</span>
               </div>
-              <span className="font-bold text-lg text-white">PalmVision</span>
+              <span className="font-bold text-lg text-white">Tea Divino</span>
             </Link>
             <button
               onClick={closeSidebar}

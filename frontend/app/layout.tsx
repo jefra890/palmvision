@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'PalmVision - Lectura de Palma con IA',
+  title: 'Tea Divino by Ajuua - Lectura de Palma con IA',
   description: 'Descubre tu destino en la palma de tu mano con inteligencia artificial',
 };
 
