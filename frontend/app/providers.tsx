@@ -140,11 +140,12 @@ export function Providers({ children }: { children: ReactNode }) {
   // Auth Functions
   const login = useCallback(async (email: string, password: string) => {
     const response = await authApi.login(email, password);
-    const { user: userData, accessToken, refreshToken } = response.data as {
+    const data = response.data as unknown as {
       user: User;
       accessToken: string;
       refreshToken: string;
     };
+    const { user: userData, accessToken, refreshToken } = data;
     localStorage.setItem('auth_token', accessToken);
     localStorage.setItem('refresh_token', refreshToken);
     setUser(userData);
