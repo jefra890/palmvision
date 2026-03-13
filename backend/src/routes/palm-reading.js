@@ -5,9 +5,12 @@ import prisma from '../lib/prisma.js';
 
 const router = Router();
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+let openai = null;
+if (process.env.OPENAI_API_KEY) {
+  openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+}
 
 const SYSTEM_PROMPT = `Eres "PalmVision", una aplicacion de entretenimiento. Actua como un experto en quiromancia capaz de analizar tanto descripciones textuales detalladas de las manos como imagenes o fotografias de las mismas.
 
@@ -40,6 +43,13 @@ Una sintesis personalizada de mi lectura, integrando todas las observaciones en 
 router.post('/analyze', authenticate, async (req, res) => {
   try {
     const { image, hand, topic } = req.body;
+
+    if (!openai) {
+      return res.status(503).json({
+        success: false,
+        error: { message: 'Palm reading service not configured. OPENAI_API_KEY is required.' },
+      });
+    }
 
     if (!image) {
       return res.status(400).json({
